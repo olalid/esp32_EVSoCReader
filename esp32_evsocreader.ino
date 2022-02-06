@@ -7,7 +7,8 @@
 #include <esp32_can.h>
 #include <PubSubClient.h>
 
-// Configuration is stored in a separate file
+// Configuration is stored in a separate file.
+// Rename config_template.h as config.h and edit to provide the required details
 #include "config.h"
 
 WiFiMulti wifiMulti;
@@ -27,8 +28,8 @@ PubSubClient MQTTclient(wifiClient);
 #define CAN_MODE_CUSTOM 0x22
 
 // The car can be using either 11-bit or 29-bit IDs as defined below.
-#define LONG_RECV_ID 0x18DAF100
 #define LONG_SEND_ID 0x18DB33F1
+#define LONG_RECV_ID 0x18DAF100
 #define LONG_RECV_MASK 0x1FFFFF00
 #define SHORT_SEND_ID 0x7DF
 #define SHORT_RECV_ID 0x7E8
