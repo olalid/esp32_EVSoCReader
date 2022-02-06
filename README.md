@@ -57,3 +57,28 @@ sensor:
     unit_of_measurement: "V"
     device_class: voltage
 ```
+
+As mentioned above, data can only be read when the car is active, which means that typically a SoC value will be received when the car returns home and is parked and it will not update during charging.
+However, if you have an EVSE (charing station) that is also integrated in Home Assistant and provides a sensor for charing session energy, it is possible to get a fairly well working estimation of the current SoC.
+By muptilpying the energy supplied in the charing session by a constant and adding it to the last known SoC, the current SoC can be estimated within a couple of %.
+The example below is for a Polestar 2 and an Easee charger.
+The easee charger supplies a charger status sensor and a charging session energy sensor, while the last known SoC is supplied by this project.
+When the status is disconnected, it is assumed that the last known SoC is the more likely correct value (i.e. when you disconned the car and drive away, the SoC will likely be updated before you leave WiFi range).
+When the status is not disconnected, the session enery is multiplied by constant 1.3456 and added to the SoC.
+The constant will be different depending on the specific vehicle and can be first estimated by dividing 100 with the battery size in kWh.
+But it is better to use actual data from a charging session, example:
+If you start charing with 20% battery SoC and charge to 90%, you will have charged 90-20 = 70% of the battery.
+The energy used to charge this was 52,02 kWh.
+The constant will be 70/52,02 = 1,3456.
+
+```
+sensor:
+  - platform: template
+    sensors:
+      ev_calculated_soc:
+        friendly_name: "EV calculated SoC"
+        value_template: "{% if states('sensor.charger_status') == 'disconnected' %}{{ states('sensor.ev_battery_soc') }}{% else %}{{ ((states('sensor.ev_battery_soc')|float) + ((states('sensor\
+.charger_session_energy')|float) * 1.3456) +0.5) | int }}{% endif %}"
+        unit_of_measurement: "%"
+        device_class: battery
+```
