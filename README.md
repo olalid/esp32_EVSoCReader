@@ -13,7 +13,10 @@ It is not mandatory to implement everything, but at least some of these are usua
 This code reads the 0x42, 0x46, and 0x5B PIDs. (Control module voltage, Ambient temperature, Hybrid battery pack remaining life). See [Wikipedia](https://en.wikipedia.org/wiki/OBD-II_PIDs) for more details on OBD2 PIDs.
 
 To transfer the information to your home automation it will try to conenct to a list of pre-programmed WiFi networks, and when it succeds it will transfer the information to a pre-programmed MQTT server.
- 
+
+Note that the OBD2 interface typically only works when the vehcile is active (e.g. ignition on). So this means that the SoC will not update during charging.
+The code turns of WiFi when the vehicle is inactive to save some power.
+
 ## Compilation
 Download the [Arduino IDE](https://www.arduino.cc/en/software) and download this project to a folder on your computer.
 Install support for ESP32 in Arduino IDE by selecting the Tools->Board->Board Manager... from the menu, search for esp32 and install.
@@ -30,5 +33,27 @@ At the point in time when this is written, the code has only been tested using a
 
 ## Example configuration for Home Assistant
 
-TBD
-
+Assuming that Home Assistant is already configured to use an MQTT server, the following can be used to set up sensors for the provided data:
+```
+sensor:
+  - platform: mqtt
+    name: "EV battery SoC"
+    state_topic: "EV/soc"
+    unit_of_measurement: "%"
+    device_class: battery
+  - platform: mqtt
+    name: "EV ambient temperature"
+    state_topic: "EV/ambient"
+    unit_of_measurement: "°C"
+    device_class: temperature
+  - platform: mqtt
+    name: "EV WiFi RSSI"
+    state_topic: "EV/rssi"
+    unit_of_measurement: "dBm"
+    device_class: signal_strength
+  - platform: mqtt
+    name: "EV 12V battery voltage"
+    state_topic: "EV/voltage"
+    unit_of_measurement: "V"
+    device_class: voltage
+```
