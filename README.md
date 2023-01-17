@@ -12,10 +12,11 @@ But, there are also a smaller set of standarized features, known as "PIDs", whic
 It is not mandatory to implement everything, but at least some of these are usually implemented.
 This code reads the 0x42, 0x46, and 0x5B PIDs. (Control module voltage, Ambient temperature, Hybrid battery pack remaining life). See [Wikipedia](https://en.wikipedia.org/wiki/OBD-II_PIDs) for more details on OBD2 PIDs.
 
-To transfer the information to your home automation system it will try to conenct to a list of pre-programmed WiFi networks, and when it succeds it will transfer the information to a pre-programmed MQTT server.
+To transfer the information to your home automation system it will try to connect to a list of pre-programmed WiFi networks, and when it succeds it will transfer the information to a pre-programmed MQTT server.
 
 Note that the OBD2 interface typically only works when the vehcile is active (e.g. ignition on). So this means that the SoC will not update during charging.
-The code turns off WiFi when the vehicle is inactive to save some power.
+The actual SoC can however be calculated, see below for more information.
+The code also turns off WiFi when the vehicle is inactive to save some power.
 
 ## Compilation
 Download the [Arduino IDE](https://www.arduino.cc/en/software) and download this project to a folder on your computer.
@@ -63,13 +64,18 @@ As mentioned above, data can only be read when the car is active, which means th
 However, if you have an EVSE (charing station) that is also integrated in Home Assistant and provides a sensor for charing session energy, it is possible to get a fairly well working estimation of the current SoC that is close to the actual SoC.
 By multiplying the energy supplied in the charing session by a constant and adding it to the last known SoC, the current SoC can be estimated, usually within a couple of %.
 The example below is for a Polestar 2 and an Easee charger.
+
 The easee charger supplies a charger status sensor and a charging session energy sensor, while the last known SoC is supplied by this project.
-When the status is disconnected, it is assumed that the last known SoC is the more likely correct value (i.e. when you disconned the car and drive away, the SoC will likely be updated before you leave WiFi range).
+When the status is disconnected, it is assumed that the last known SoC is the more likely correct value (i.e. when you disconnect the car and drive away, the SoC will likely be updated before you leave WiFi range).
 When the status is not disconnected, the session enery is multiplied by constant 1.3456 and added to the SoC.
+
 The constant will be different depending on the specific vehicle and can be first estimated by dividing 100 with the battery size in kWh.
 But it is better to use actual data from a charging session, example:
+
 If you start charing with 20% battery SoC and charge to 90%, you will have charged 90-20 = 70% of the battery.
+
 The energy used to charge this range was 52,02 kWh.
+
 The constant will therefore be 70/52,02 = 1,3456.
 
 ```
@@ -78,8 +84,7 @@ sensor:
     sensors:
       ev_calculated_soc:
         friendly_name: "EV calculated SoC"
-        value_template: "{% if states('sensor.charger_status') == 'disconnected' %}{{ states('sensor.ev_battery_soc') }}{% else %}{{ ((states('sensor.ev_battery_soc')|float) + ((states('sensor\
-.charger_session_energy')|float) * 1.3456) +0.5) | int }}{% endif %}"
+        value_template: "{% if states('sensor.charger_status') == 'disconnected' %}{{ states('sensor.ev_battery_soc') }}{% else %}{{ ((states('sensor.ev_battery_soc')|float) + ((states('sensor.charger_session_energy')|float) * 1.3456) +0.5) | int }}{% endif %}"
         unit_of_measurement: "%"
         device_class: battery
 ```

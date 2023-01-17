@@ -18,4 +18,6 @@ char mqtt_status_topic_soc[64] = "EV/soc";
 char mqtt_status_topic_voltage[64] = "EV/voltage";
 char mqtt_status_topic_ambient[64] = "EV/ambient";
 char mqtt_status_topic_rssi[64] = "EV/rssi";
-
+char mqtt_status_topic_odo[64] = "EV/odo";
+char mqtt_status_topic_gear[64] = "EV/gear";
+char mqtt_status_topic_vin[64] = "EV/vin";

@@ -1,6 +1,6 @@
 /* 
  * Written for MACCHINA A0 OBD-II
- * Reads HV battery SoC, ambient temperature and 12V battery voltage and transfers data to MQTT server
+ * Reads VIN, HV battery SoC, ambient temperature, 12V battery voltage, gear and odometer and transfers data to MQTT server
  */
 #include <WiFi.h>
 #include <WiFiMulti.h>
@@ -34,13 +34,19 @@ PubSubClient MQTTclient(wifiClient);
 #define SHORT_SEND_ID 0x7DF
 #define SHORT_RECV_ID 0x7E8
 #define SHORT_RECV_MASK 0x7F8
+#define LONGBC_RECV_ID 0x1FFF0000
+#define LONGBC_RECV_MASK 0x1FFFF000
+#define ODOMETER_ID 0x1FFF0120 
+#define GEAR_ID 0x1FFF00A0
 
 // The list of PIDs that we read. Not all cars will respond to everything.
-#define NUM_PIDS 3
-const uint16_t pids[] = {
-  PID_CONTROL_MODULE_VOLTAGE,
-  PID_AMBIENT_AIR_TEMPERATURE,
-  PID_BATTERY_PACK_SOC
+#define NUM_PIDS 5
+const uint16_t pids[][2] = {
+  { CAN_MODE_INFORMATION, PID_VIN },
+  { CAN_MODE_CURRENT,     PID_CONTROL_MODULE_VOLTAGE },
+  { CAN_MODE_CURRENT,     PID_AMBIENT_AIR_TEMPERATURE },
+  { CAN_MODE_CURRENT,     PID_BATTERY_PACK_SOC },
+  { CAN_MODE_CURRENT,     PID_VEHICLE_SPEED }
 };
 
 // GPIO pin definitions
@@ -54,16 +60,19 @@ volatile int lastKMPH=-1;
 volatile int lastSoC=-1;
 volatile float lastVoltage=-1;
 volatile int lastAmbient=-100;
+volatile char lastGear='U';
+volatile unsigned int lastODO=-1;
 volatile unsigned int lastSupported[7];
 volatile long lastRssi=-1;
 volatile unsigned long recv_l=0;
+volatile char globalVIN[18];
 
 void setup()
 {
 
   // Disable LED power
   pinMode(led_pin, OUTPUT);
-  digitalWrite(led_pin, HIGH);
+  digitalWrite(led_pin, LOW);
 
   // Pull CAN S pin low for non-idle state.
   pinMode(can_en_pin, OUTPUT);
@@ -71,6 +80,7 @@ void setup()
   
   // Start Serial port
   Serial.begin(115200);
+  Serial.println(APPNAME);
   Serial.println("Serial Ready...");
 
   // Init CAN pins, baudrate and setup filter and callback for expected response IDs.
@@ -79,8 +89,10 @@ void setup()
   int filter;
   filter = CAN0.watchForRange(SHORT_RECV_ID, SHORT_RECV_MASK);
   CAN0.setCallback(filter, receiveCallback);
-  filter = CAN0.watchFor(LONG_RECV_ID, 0x1FFFFF00);
+  filter = CAN0.watchFor(LONG_RECV_ID, LONG_RECV_MASK);
   CAN0.setCallback(filter, receiveCallback);
+  filter = CAN0.watchFor(LONGBC_RECV_ID, LONGBC_RECV_MASK);
+  CAN0.setCallback(filter, receiveBCCallback);
   Serial.println("CAN Ready...");
 
   // Configure the APs we want to connect to.
@@ -93,9 +105,11 @@ void setup()
   MQTTclient.setServer(mqtt_server, atoi(mqtt_port));
   Serial.println("MQTT ready...");
 
-  // Reduce power, we do not need hihg performance
+  // Reduce power, we do not need high performance
   setCpuFrequencyMhz(80);
-  
+   
+  for(int i = 0; i < 18; i++)
+    globalVIN[i] = 0;
 }
 
 void loop()
@@ -127,12 +141,18 @@ void loop()
         }
         // If data has been updated, send to MQTT server
         if(dirty_data) {
+          Serial.print("VIN: ");
+          Serial.println((const char *)globalVIN);
           Serial.print("SoC: ");
           Serial.println(lastSoC);
           Serial.print("Voltage: ");
           Serial.println(lastVoltage);
           Serial.print("Ambient: ");
           Serial.println(lastAmbient);
+          Serial.print("ODO: ");
+          Serial.println(lastODO);
+          Serial.print("Gear: ");
+          Serial.println(lastGear);
           sendMQTT();
           
         }
@@ -164,6 +184,7 @@ void sendMQTT()
   
   // Try to connect to MQTT server
   if(MQTTclient.connect(APPNAME)) {
+    Serial.println("Connected...");
     MQTTclient.loop();
     if(lastSoC != -1) {
       snprintf(mqttStr, 16, "%d", lastSoC);
@@ -180,6 +201,20 @@ void sendMQTT()
       MQTTclient.publish(mqtt_status_topic_ambient, mqttStr, true);
       MQTTclient.loop();
     }
+    if(lastODO != -1) {
+      snprintf(mqttStr, 16, "%d", lastODO);
+      MQTTclient.publish(mqtt_status_topic_odo, mqttStr, true);
+      MQTTclient.loop();      
+    }
+    if(lastGear != 'U') {
+      snprintf(mqttStr, 16, "%c", lastGear);
+      MQTTclient.publish(mqtt_status_topic_gear, mqttStr, true);
+      MQTTclient.loop();      
+    }
+    if(strlen((const char*)globalVIN) == 17) {
+      MQTTclient.publish(mqtt_status_topic_vin, (const char*)globalVIN, true);
+      MQTTclient.loop();            
+    }    
     snprintf(mqttStr, 16, "%d", lastRssi);
     MQTTclient.publish(mqtt_status_topic_rssi, mqttStr, true);
     MQTTclient.loop();
@@ -215,13 +250,15 @@ void wifiOff()
 void sendCAN()
 {
 
-  static unsigned long can_loop = 0;
+  static unsigned long canLoop = 0;
 
-  sendPIDRequest(SHORT_SEND_ID, CAN_MODE_CURRENT, pids[can_loop]);
-  sendPIDRequest(LONG_SEND_ID, CAN_MODE_CURRENT, pids[can_loop]);
-  can_loop++;
-  if(can_loop >= NUM_PIDS)
-    can_loop = 0; 
+  // Send the requests to both 11 and 29 bit IDs.
+  sendPIDRequest(SHORT_SEND_ID, pids[canLoop][0], pids[canLoop][1]);
+  sendPIDRequest(LONG_SEND_ID, pids[canLoop][0], pids[canLoop][1]);
+  canLoop++; 
+  if(canLoop >= NUM_PIDS) {
+    canLoop = 0;
+  }
 
 }
 
@@ -238,7 +275,7 @@ void sendPIDRequest(uint32_t id, uint8_t mode, uint16_t PID)
   for (int i = 3; i < 8; i++)
     frame.data.bytes[i] = 0x00;
 
-  // For all modes between 0x01, this is the packet format
+  // For mode 0x01 and 0x09 this is the packet format
   if(mode == 0x01 || mode == 0x09) {
     frame.data.bytes[0] = 2; //2 more bytes to follow
     frame.data.bytes[1] = mode;
@@ -259,6 +296,35 @@ void sendPIDRequest(uint32_t id, uint8_t mode, uint16_t PID)
 
 }
 
+void sendFlowRequest(uint32_t id)
+{
+
+  CAN_FRAME frame;
+  frame.extended = (id > 0x7ff)?1:0; // Set to 1 if 29-bit address.
+  frame.length = 8;
+  frame.rtr = 0;
+  // The input ID is the senders ID, so must be converted before sending request
+  // For 29 bit addresses the 2 least significant bytes sholuld swap place.
+  // For 11 bit addresses the adress should be decreased by 8.
+  if(id > 0x7ff)
+    frame.id = (id & 0xffff0000) | ((id & 0xff) << 8) | ((id & 0xff00) >> 8);
+  else
+    frame.id = id - 8; 
+
+  // Set unused data bytes to 0 
+  for (int i = 1; i < 8; i++)
+    frame.data.bytes[i] = 0x00;
+
+  // Flow frame request
+  frame.data.bytes[0] = 0x30;
+
+  // Send the frame
+  int ret = CAN0.sendFrame(frame);
+  if(ret)
+    Serial.println("F");
+
+}
+
 // This function is called by the CAN lib when a matching frame is received
 void receiveCallback(CAN_FRAME *frame)
 {
@@ -269,59 +335,142 @@ void receiveCallback(CAN_FRAME *frame)
   float Voltage;
   int SoC;
   unsigned int supported;
+  int index;
+  static int mode;
+  static int len;
+  static int pid;
 
-  // Check that this seems to be a response to a mode 1 request.
-  // All others are ignored for now
-  if(frame->data.bytes[1] != 0x41)
-    return; //not anything we're interested in then
-
-  // Save a timestamp
-  recv_l = millis();
-
-  // Print the PID of the received frame
+  // Print the received frame
   Serial.print("R ");
-  Serial.println(frame->data.bytes[2], 16);
+  Serial.print(frame->id, HEX);
+  for(int i=0; i < 8; i++) {
+    Serial.print(" ");
+    Serial.print(frame->data.bytes[i], HEX);
+  }
+  Serial.println("");
 
-  // Decode the data
-  switch (frame->data.bytes[2])
-  {
+  // Check the frame code
+  switch((frame->data.bytes[0] & 0xf0) >> 4) {
+
+    case 0: // Single frame
+      len = frame->data.bytes[0];
+      mode = frame->data.bytes[1];
+      pid = frame->data.bytes[2];
+      break;
+
+    case 1: // First frame of multiple frame
+      len =  frame->data.bytes[1] | ((frame->data.bytes[0] & 0xf) << 8) - 6;
+      mode = frame->data.bytes[2];
+      pid =  frame->data.bytes[3];
+      // Ask for the consecutive frames
+      sendFlowRequest(frame->id); //0x18DA10F1); // 18DAF118
+      break;
+      
+    case 2: // Consecutive frames of multiple
+      // Note, mode and pid is remembered from last frame
+      len = len - 7;
+      index = frame->data.bytes[0] & 0xf;
+      break;
+      
+    default:
+      mode = -1;
+      break;
+  }
+
+  // Is this a mode 1 response?
+  if(mode == 0x41) {
     
-    case PID_VEHICLE_SPEED:
-      KMPH = frame->data.bytes[3];
-      if (KMPH!=lastKMPH)
-      {
-        lastKMPH = KMPH;
-        dirty_data = 1;
-      }
-    break;
+    // Save a timestamp
+    recv_l = millis();
+  
 
-    case PID_BATTERY_PACK_SOC:
-      SoC = (int)((frame->data.bytes[3] * 100.0/255.0)+0.5);
-      if (SoC != lastSoC)
-      {
-        lastSoC = SoC;
-        dirty_data = 1;
-      }
-    break;
-
-    case PID_CONTROL_MODULE_VOLTAGE:
-      Voltage = ((frame->data.bytes[3] << 8) | frame->data.bytes[4])/1000.0;
-      if (Voltage != lastVoltage)
-      {
-        lastVoltage = Voltage;
-        dirty_data = 1;
-      }
-    break;
-
-    case PID_AMBIENT_AIR_TEMPERATURE:
-      Ambient = frame->data.bytes[3] - 40;
-      if (Ambient != lastAmbient)
-      {
-        lastAmbient = Ambient;
-        dirty_data = 1;
-      }
-    break;
+    // Decode the data
+    switch (frame->data.bytes[2]) {
+      
+      case PID_VEHICLE_SPEED:
+        KMPH = frame->data.bytes[3];
+        if (KMPH!=lastKMPH) {
+          lastKMPH = KMPH;
+          dirty_data = 1;
+        }
+        break;
+  
+      case PID_BATTERY_PACK_SOC:
+        SoC = (int)((frame->data.bytes[3] * 100.0/255.0)+0.5);
+        if (SoC != lastSoC) {
+          lastSoC = SoC;
+          dirty_data = 1;
+        }
+        break;
+  
+      case PID_CONTROL_MODULE_VOLTAGE:
+        Voltage = ((frame->data.bytes[3] << 8) | frame->data.bytes[4])/1000.0;
+        if (Voltage != lastVoltage) {
+          lastVoltage = Voltage;
+          dirty_data = 1;
+        }
+        break;
+  
+      case PID_AMBIENT_AIR_TEMPERATURE:
+        Ambient = frame->data.bytes[3] - 40;
+        if (Ambient != lastAmbient) {
+          lastAmbient = Ambient;
+          dirty_data = 1;
+        }
+        break;
+      
+    }
     
+  // Is this a mode 9 response?
+  } else if(mode == 0x49) {
+
+    switch (pid) {
+      
+      case PID_VIN:
+        if(frame->data.bytes[0] == 0x10) {
+          for(int i = 0; i < 3; i++)
+            globalVIN[i] = frame->data.bytes[i+5];
+        } else {
+          if(index == 1 || index == 2)
+            for(int i = 0; i < 7 ; i++)
+              globalVIN[3+(index-1)*7+i] = frame->data.bytes[i+1];
+        }
+        break;
+        
+    }
+ 
+  }
+  
+}
+
+
+// This function is called by the CAN lib when a matching broadcast frame is received
+// These are likeley Polestar specific, but might work on some Volvo models as well
+void receiveBCCallback(CAN_FRAME *frame)
+{
+
+  unsigned int ODO;
+  char Gear;
+  static char gearTranslate[] = {'P', 'R', 'N', 'D'};
+
+  if(frame->id == ODOMETER_ID) {
+    ODO = ((frame->data.bytes[0] & 0x0f) << 16) |
+          (frame->data.bytes[1] << 8) |
+          frame->data.bytes[2];
+    if(ODO != lastODO) {
+      lastODO = ODO;
+      dirty_data = 1;
+    }
+  }
+
+  if(frame->id == GEAR_ID) {
+    Gear = gearTranslate[frame->data.bytes[6] & 3];
+    if(Gear != lastGear) {
+      lastGear = Gear;
+      dirty_data = 1;
+      Serial.print("Gear changed: ");
+      Serial.println(Gear);
+    }
   }
   
 }
