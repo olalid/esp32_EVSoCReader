@@ -10,7 +10,8 @@ OBD2 is a standardized interface that most modern cars implements to provide an 
 There are usually many vendor specific features that enable workshops with the right equipment to read and change a lot of details and even do software updates to a vehicle.
 But, there are also a smaller set of standarized features, known as "PIDs", which can be read in the same way in most vehicles.
 It is not mandatory to implement everything, but at least some of these are usually implemented.
-This code reads the 0x42, 0x46, and 0x5B PIDs. (Control module voltage, Ambient temperature, Hybrid battery pack remaining life). See [Wikipedia](https://en.wikipedia.org/wiki/OBD-II_PIDs) for more details on OBD2 PIDs.
+This code reads the 0x42, 0x46, 0x5B PIDs and 0x02 Info PID.. (Control module voltage, Ambient temperature, Hybrid battery pack remaining life and VIN). See [Wikipedia](https://en.wikipedia.org/wiki/OBD-II_PIDs) for more details on OBD2 PIDs.
+There is also support for decoding some broadcasted data in Polestar 2; Odometer and selected gear, but this is manufacturer specific and will not work on other cars unless they are built on the same or a similar platform.
 
 To transfer the information to your home automation system it will try to connect to a list of pre-programmed WiFi networks, and when it succeds it will transfer the information to a pre-programmed MQTT server.
 
